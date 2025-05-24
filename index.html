@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analizador Inteligente</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome para iconos -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Showdown para convertir Markdown a HTML -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js"></script>
+    <link rel="stylesheet" href="style.css"> <!-- Tu CSS personalizado -->
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-envelope-open-text me-2"></i>Analizador Inteligente
+            </a>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- Navegación entre pantallas -->
+        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="correos-tab" data-bs-toggle="tab" data-bs-target="#correos" type="button" role="tab" aria-controls="correos" aria-selected="true">
+                    <i class="fas fa-envelope me-2"></i>Analizador de Correos
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="asistente-tab" data-bs-toggle="tab" data-bs-target="#asistente" type="button" role="tab" aria-controls="asistente" aria-selected="false">
+                    <i class="fas fa-robot me-2"></i>Asistente IA
+                </button>
+            </li>
+        </ul>
+
+        <!-- Contenido de las pantallas -->
+        <div class="tab-content mt-4" id="mainTabsContent">
+            <!-- Pantalla: Analizador de Correos -->
+            <div class="tab-pane fade show active" id="correos" role="tabpanel" aria-labelledby="correos-tab">
+                <h2 class="text-center">Analizador de Correos</h2>
+                <form id="searchForm">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label for="asuntoInput" class="form-label">Asunto del Hilo de Correos:</label>
+                            <input type="text" class="form-control form-control-lg" id="asuntoInput" name="asunto" placeholder="Ej: Proyecto Milos Actualizaciones" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="fechaDesdeInput" class="form-label">Fecha Desde:</label>
+                            <input type="date" class="form-control" id="fechaDesdeInput" name="fecha_desde">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="fechaHastaInput" class="form-label">Fecha Hasta:</label>
+                            <input type="date" class="form-control" id="fechaHastaInput" name="fecha_hasta">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-lg w-100 mt-4">
+                        <i class="fas fa-search me-2"></i>Generar Informe
+                    </button>
+                </form>
+                <div id="estadoDiv" class="mt-4"></div>
+                <div id="resumenConsolidadoContainer" class="mt-4" style="display: none;">
+                    <div class="card shadow">
+                        <div class="card-header bg-light">
+                            <h2 class="card-title mb-0">Informe Cronológico Detallado</h2>
+                        </div>
+                        <div class="card-body">
+                            <div id="resumenConsolidadoDiv" class="informe-contenido">
+                                <!-- El resumen consolidado se insertará aquí -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Nueva pestaña de Asistente IA -->
+            <div class="tab-pane fade" id="asistente" role="tabpanel" aria-labelledby="asistente-tab">
+                <div class="container mt-4">
+                    <div class="card shadow">
+                        <div class="card-header bg-primary text-white">
+                            <h3 class="card-title mb-0"><i class="fas fa-robot me-2"></i>Asistente Inteligente</h3>
+                        </div>
+                        <div class="card-body">
+                            <div id="chat-container" class="mb-3" style="height: 400px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 5px; padding: 10px;">
+                                <div class="assistant-message">
+                                    <div class="message-avatar">
+                                        <i class="fas fa-robot"></i>
+                                    </div>
+                                    <div class="message-content">
+                                        <p>¡Hola! Soy tu asistente de análisis. Puedo ayudarte a explorar y comprender los datos de tus reportes. ¿Qué te gustaría saber?</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <input type="text" id="chat-input" class="form-control" placeholder="Haz una pregunta sobre los datos..." aria-label="Mensaje">
+                                <button class="btn btn-primary" type="button" id="send-message">
+                                    <i class="fas fa-paper-plane"></i> Enviar
+                                </button>
+                            </div>
+                            <div class="form-text text-muted mt-2">
+                                Ejemplos: "¿Cuáles son los puntos clave del informe?", "Resúmeme los temas principales", "¿Qué acciones se mencionan?"
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="bg-dark text-white text-center p-3 mt-5">
+        <p>&copy; 2025 Analizador Inteligente. Todos los derechos reservados.</p>
+    </footer>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Font Awesome JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/js/all.min.js"></script>
+    <!-- Tu JS personalizado -->
+    <script src="script.js"></script>
+</body>
+</html>

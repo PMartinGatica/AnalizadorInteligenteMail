@@ -1,0 +1,12 @@
+# Archivos de entorno
+.env
+.env.local
+.env.*.local
+
+# Archivos de caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Archivos generados
+token.pickle
