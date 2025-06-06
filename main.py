@@ -17,7 +17,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 # Importaciones de Google API
-from google_api import crear_servicios, listar_archivos, leer_hoja_de_calculo
+from google_api import crear_servicios, listar_archivos, leer_hoja_de_calculo, buscar_archivos_drive
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -98,28 +98,27 @@ def buscar_correos_imap(mail_connection, asunto_buscado, fecha_desde_str=None, f
         # Formato de fecha para IMAP: "DD-Mon-YYYY" (ej: "01-Jan-2023")
         if fecha_desde_str:
             try:
-                fecha_desde_obj = datetime.strptime(fecha_desde_str, '%Y-%m-%d')
-                criterios.append(f'(SINCE {fecha_desde_obj.strftime("%d-%b-%Y")})')
+                fecha_desde = datetime.strptime(fecha_desde_str, '%Y-%m-%d')
+                fecha_desde_imap = fecha_desde.strftime('%d-%b-%Y')
+                criterios.append(f'(SINCE "{fecha_desde_imap}")')
             except ValueError:
-                print(f"Advertencia: Formato de fecha_desde incorrecto: {fecha_desde_str}. Se ignorará.")
+                print(f"Formato de fecha_desde inválido: {fecha_desde_str}")
 
         if fecha_hasta_str:
             try:
-                fecha_hasta_obj = datetime.strptime(fecha_hasta_str, '%Y-%m-%d')
-                fecha_limite_superior = fecha_hasta_obj + timedelta(days=1)
-                criterios.append(f'(BEFORE {fecha_limite_superior.strftime("%d-%b-%Y")})')
+                fecha_hasta = datetime.strptime(fecha_hasta_str, '%Y-%m-%d')
+                fecha_hasta_imap = fecha_hasta.strftime('%d-%b-%Y')
+                criterios.append(f'(BEFORE "{fecha_hasta_imap}")')
             except ValueError:
-                print(f"Advertencia: Formato de fecha_hasta incorrecto: {fecha_hasta_str}. Se ignorará.")
+                print(f"Formato de fecha_hasta inválido: {fecha_hasta_str}")
         
         if not criterios:
             print("No hay criterios de búsqueda válidos (asunto o fechas).")
             if not asunto_buscado:
-                print("El asunto es requerido para la búsqueda.")
                 return []
 
         search_query = " ".join(criterios)
         if not search_query.strip():
-            print("Criterio de búsqueda final vacío. No se realizará la búsqueda.")
             return []
 
         print(f"Buscando correos con el criterio: {search_query}")
@@ -127,10 +126,11 @@ def buscar_correos_imap(mail_connection, asunto_buscado, fecha_desde_str=None, f
         status, email_uids_bytes_list = mail_connection.uid('search', None, search_query)
 
         if status != 'OK':
-            print(f"Error durante la búsqueda IMAP: {status}")
+            print("Error en la búsqueda IMAP.")
             return []
+            
         if not email_uids_bytes_list or not email_uids_bytes_list[0]:
-            print("No se encontraron UIDs de correos que coincidan con los criterios.")
+            print("No se encontraron correos con los criterios especificados.")
             return []
         
         email_uids = email_uids_bytes_list[0].split()
@@ -145,234 +145,205 @@ def obtener_y_parsear_correo_imap(mail_connection, email_uid):
         return None
     try:
         status, data = mail_connection.uid('fetch', email_uid, '(RFC822)')
-        if status == 'OK':
-            raw_email = data[0][1]
-            email_message = email.message_from_bytes(raw_email)
-            return email_message
-        else:
-            print(f"Error al obtener el correo con UID {email_uid.decode()}: {status}")
+        if status != 'OK' or not data or not data[0]:
+            print(f"Error al obtener el correo con UID {email_uid}")
             return None
+        
+        raw_email = data[0][1]
+        mensaje_parseado = email.message_from_bytes(raw_email)
+        return mensaje_parseado
     except Exception as e:
-        print(f"Ocurrió un error al obtener o parsear el correo UID {email_uid.decode()}: {e}")
+        print(f"Error al parsear correo UID {email_uid}: {e}")
+        return None
+
+def extraer_informacion_correo(mensaje_parseado, email_uid):
+    """Extrae información relevante del correo parseado."""
+    try:
+        # Extraer información básica
+        asunto = decodificar_asunto(mensaje_parseado.get('Subject', ''))
+        remitente = mensaje_parseado.get('From', '')
+        fecha_str = mensaje_parseado.get('Date', '')
+        
+        # Convertir fecha
+        fecha_datetime = None
+        if fecha_str:
+            try:
+                fecha_datetime = parsedate_to_datetime(fecha_str)
+            except Exception as e:
+                print(f"Error al parsear fecha: {e}")
+        
+        # Extraer cuerpo del correo
+        cuerpo_texto = ""
+        if mensaje_parseado.is_multipart():
+            for part in mensaje_parseado.walk():
+                if part.get_content_type() == "text/plain":
+                    try:
+                        cuerpo_texto = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                        break
+                    except Exception as e:
+                        print(f"Error al decodificar parte del correo: {e}")
+        else:
+            try:
+                cuerpo_texto = mensaje_parseado.get_payload(decode=True).decode('utf-8', errors='ignore')
+            except Exception as e:
+                print(f"Error al decodificar correo: {e}")
+        
+        return {
+            'uid': email_uid.decode() if isinstance(email_uid, bytes) else str(email_uid),
+            'asunto': asunto,
+            'remitente': remitente,
+            'fecha': fecha_datetime.isoformat() if fecha_datetime else '',
+            'cuerpo_texto_plano': cuerpo_texto[:1000]  # Limitar tamaño
+        }
+    except Exception as e:
+        print(f"Error al extraer información del correo: {e}")
         return None
 
 def generar_resumen_consolidado_ia(lista_textos_correos_ordenados):
     """
-    Genera un resumen consolidado de una lista de textos de correos (ordenados cronológicamente) usando Gemini.
+    Genera un resumen consolidado de una lista de textos de correos usando Gemini.
     """
     global GEMINI_API_KEY_CONFIGURADA
     if not GEMINI_API_KEY_CONFIGURADA:
         return "Resumen consolidado no disponible (API Key de Gemini no configurada)."
+    
     if not lista_textos_correos_ordenados:
-        return "No hay contenido de correos para generar un resumen consolidado."
+        return "No hay correos para resumir."
 
     texto_completo_para_resumir = "\n\n--- SIGUIENTE CORREO EN LA SECUENCIA ---\n\n".join(lista_textos_correos_ordenados)
     
     MAX_CHARS_FOR_SUMMARY = 180000
     if len(texto_completo_para_resumir) > MAX_CHARS_FOR_SUMMARY:
-        print(f"ADVERTENCIA: El texto concatenado ({len(texto_completo_para_resumir)} chars) excede el límite de {MAX_CHARS_FOR_SUMMARY} chars. Se truncará.")
-        texto_completo_para_resumir = texto_completo_para_resumir[:MAX_CHARS_FOR_SUMMARY]
-
-    print(f"Generando resumen CONSOLIDADO IA con Gemini para texto de {len(texto_completo_para_resumir)} caracteres...")
-
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        
-        prompt = (
-            "Eres un analista experto y un excelente comunicador. Tu tarea es analizar la siguiente secuencia de correos electrónicos, proporcionados en orden cronológico, "
-            "y generar un informe narrativo que describa la evolución de los eventos, discusiones, decisiones clave y acciones resultantes. "
-            "El informe debe leerse como un flujograma coherente de los acontecimientos.\n\n"
-            "**Estructura y Tono del Informe:**\n"
-            "- Comienza con un título general y conciso que capture la esencia del tema tratado en los correos.\n"
-            "- Continúa con una narrativa fluida y cronológica. En lugar de usar encabezados rígidos como 'Introducción' o 'Desarrollo', integra esta información de manera natural en el flujo del texto.\n"
-            "- Para cada desarrollo importante, identifica quién hizo o dijo qué, cuándo ocurrió (si es relevante y distintivo), y cuál fue el impacto o la información clave.\n"
-            "- Utiliza párrafos bien formados para separar ideas o etapas distintas en la cronología. Puedes usar listas con viñetas si es apropiado para enumerar acciones o puntos específicos dentro de un desarrollo.\n"
-            "- Destaca las decisiones cruciales, los problemas que surgieron, las soluciones que se propusieron o implementaron, y cualquier acción que quede pendiente al final de la secuencia.\n"
-            "- El lenguaje debe ser profesional, claro, y preciso. Presta atención a la gramática, puntuación y ortografía.\n"
-            "- El objetivo es que alguien que no leyó los correos pueda entender rápidamente qué sucedió, cómo evolucionó la situación y cuál es el estado actual.\n"
-            "- Si es posible, utiliza Markdown sutil para enfatizar puntos clave (como **texto en negrita** para nombres de proyectos o decisiones importantes, o *cursiva* para citas breves o términos específicos) y para listas.\n\n"
-            "**Contenido a Extraer y Presentar:**\n"
-            "- El tema o proyecto principal.\n"
-            "- Los participantes clave y sus roles (si se deducen).\n"
-            "- La secuencia de eventos y comunicaciones.\n"
-            "- Problemas identificados y cómo se abordaron.\n"
-            "- Decisiones tomadas.\n"
-            "- Resultados o estado actual del tema.\n"
-            "- Cualquier tarea o acción pendiente.\n\n"
-            "Analiza la siguiente secuencia de correos:\n\n"
-            f"{texto_completo_para_resumir}\n\n"
-            "---\n**Informe Cronológico Detallado:**"
-        )
-        
-        generation_config = genai.types.GenerationConfig(
-            candidate_count=1,
-            max_output_tokens=2500,
-            temperature=0.6,
-        )
-
-        response = model.generate_content(prompt, generation_config=generation_config)
-
-        if response.parts:
-            resumen = response.text.strip()
-            resumen = re.sub(r'\n\s*\n', '\n\n', resumen)
-            print("Resumen CONSOLIDADO IA con Gemini generado.")
-            return resumen
-        elif response.prompt_feedback and response.prompt_feedback.block_reason:
-            block_reason_message = f"Contenido bloqueado por Gemini. Razón: {response.prompt_feedback.block_reason}"
-            if response.prompt_feedback.safety_ratings:
-                block_reason_message += f" Ratings: {response.prompt_feedback.safety_ratings}"
-            print(f"ADVERTENCIA: {block_reason_message}")
-            return f"Resumen consolidado no generado: {block_reason_message}"
-        else:
-            resumen = response.text.strip() if hasattr(response, 'text') and response.text else "No se pudo generar el resumen consolidado (respuesta vacía de Gemini)."
-            if not resumen.startswith("No se pudo generar"):
-                 print("Resumen CONSOLIDADO IA con Gemini generado (respuesta sin 'parts' pero con 'text').")
-            else:
-                 print(f"ADVERTENCIA: {resumen} Respuesta completa: {response}")
-            return resumen
-            
-    except Exception as e:
-        print(f"Error de API de Google Gemini al generar resumen CONSOLIDADO: {e}")
-        return f"Error al generar resumen CONSOLIDADO IA con Gemini: {str(e)}"
-
-def extraer_informacion_correo(email_message, email_uid):
-    if not email_message:
-        return None
-
-    fecha_str = decodificar_asunto(email_message.get("Date"))
-    fecha_iso = fecha_str
-    if fecha_str:
-        try:
-            dt_obj = parsedate_to_datetime(fecha_str)
-            if dt_obj:
-                fecha_iso = dt_obj.isoformat()
-        except Exception as e:
-            print(f"No se pudo parsear la fecha '{fecha_str}': {e}. Usando valor original.")
-
-    informacion_extraida = {
-        "id_mensaje_uid": email_uid.decode() if isinstance(email_uid, bytes) else str(email_uid),
-        "fecha": fecha_iso,
-        "remitente": decodificar_asunto(email_message.get("From")),
-        "asunto": decodificar_asunto(email_message.get("Subject")),
-        "cuerpo_texto_plano": ""
-    }
-
-    cuerpo_bruto = ""
-    if email_message.is_multipart():
-        for part in email_message.walk():
-            content_type = part.get_content_type()
-            content_disposition = str(part.get("Content-Disposition"))
-            if content_type == 'text/plain' and 'attachment' not in content_disposition:
-                try:
-                    charset = part.get_content_charset() or 'utf-8'
-                    cuerpo_bruto = part.get_payload(decode=True).decode(charset, errors='replace')
-                    break 
-                except Exception as e:
-                    print(f"No se pudo decodificar una parte del cuerpo (text/plain) para UID {informacion_extraida['id_mensaje_uid']}: {e}")
-                    cuerpo_bruto = "[Cuerpo no decodificable o error de charset]"
-    else:
-        content_type = email_message.get_content_type()
-        if content_type == 'text/plain':
-            try:
-                charset = email_message.get_content_charset() or 'utf-8'
-                cuerpo_bruto = email_message.get_payload(decode=True).decode(charset, errors='replace')
-            except Exception as e:
-                print(f"No se pudo decodificar el cuerpo (no multipart) para UID {informacion_extraida['id_mensaje_uid']}: {e}")
-                cuerpo_bruto = "[Cuerpo no decodificable o error de charset]"
-
-    cuerpo_limpio = cuerpo_bruto
-    marcadores_corte = [
-        "LA INFORMACION AQUI CONTENIDA ES CONFIDENCIAL",
-        "THE INFORMATION CONTAINED IN THIS E-MAIL IS PRIVILEGED",
-        "www.newsan.com.ar",
-        "-- \r\n\r\n[image: photo]",
-        "Cordialmente,", "Saludos,", "Atentamente,", "Regards,", "Best regards,",
-        "--------------------------------------------------------------------",
-        "____________________________________________________________________"
-    ]
-    posicion_corte = len(cuerpo_limpio)
-    for marcador in marcadores_corte:
-        idx = cuerpo_limpio.find(marcador)
-        if idx != -1 and idx < posicion_corte:
-            posicion_corte = idx
-    if posicion_corte < len(cuerpo_limpio):
-        cuerpo_limpio = cuerpo_limpio[:posicion_corte]
+        texto_completo_para_resumir = texto_completo_para_resumir[:MAX_CHARS_FOR_SUMMARY] + "...[TEXTO TRUNCADO]"
     
-    informacion_extraida["cuerpo_texto_plano"] = cuerpo_limpio.strip()
-    return informacion_extraida
+    try:
+        # Cambiar el modelo a uno disponible actualmente
+        model = genai.GenerativeModel('gemini-1.5-flash')  # Cambio de gemini-pro a gemini-1.5-flash
+        prompt = f"""
+        Actúa como un analista experto en comunicaciones internas de una fábrica de ensamblaje de celulares (marca Motorola). Analiza cuidadosamente la siguiente secuencia de correos electrónicos. Tu objetivo es ayudarme a entender por completo el contenido, sin que se me escape ningún detalle relevante.
+
+Genera un informe claro, ordenado y cronológico que incluya lo siguiente:
+
+Un resumen del tema central que se discute, relacionado con el proceso de ensamblaje, componentes, logística, producción u otros aspectos técnicos o administrativos relevantes.
+
+Un desglose de los puntos clave y argumentos mencionados por cada remitente.
+
+Las decisiones tomadas o acciones propuestas en cada intercambio.
+
+Una narrativa cronológica redactada naturalmente: incluye quién envió cada correo, la fecha, y qué dijo (por ejemplo: "El 6 de junio, Richard expresó preocupación por el faltante de placas madre...").
+
+Datos adicionales que ayuden a comprender el contexto, como nombres de modelos, cantidades, plazos, problemas técnicos, propuestas, acuerdos o temas pendientes.
+
+Redacta el informe de forma clara, completa y explicativa, como si se lo contaras a alguien que no leyó los correos. No omitas detalles, incluso si parecen pequeños.
+        
+        Correos a analizar:
+        {texto_completo_para_resumir}
+        
+        Por favor, proporciona un resumen claro y estructurado.
+        """
+        
+        response = model.generate_content(prompt)
+        return response.text if response else "No se pudo generar el resumen."
+    
+    except Exception as e:
+        print(f"Error al generar resumen con IA: {e}")
+        return f"Error al generar resumen: {str(e)}"
 
 @app.route('/api/buscar_correos', methods=['GET'])
 def buscar_correos():
-    asunto_a_buscar_param = request.args.get('asunto')
-    fecha_desde_param = request.args.get('fecha_desde')
-    fecha_hasta_param = request.args.get('fecha_hasta')
+    try:
+        asunto_a_buscar_param = request.args.get('asunto')
+        fecha_desde_param = request.args.get('fecha_desde')
+        fecha_hasta_param = request.args.get('fecha_hasta')
 
-    if not asunto_a_buscar_param:
-        return jsonify({"error": "El parámetro 'asunto' es requerido"}), 400
+        if not asunto_a_buscar_param:
+            return jsonify({"error": "El parámetro 'asunto' es requerido"}), 400
 
-    print(f"Solicitud API recibida para buscar correos con asunto: '{asunto_a_buscar_param}', Desde: {fecha_desde_param}, Hasta: {fecha_hasta_param}")
-    
-    conexion_imap = conectar_imap(EMAIL_USUARIO_FIJO, CONTRASENA_APP_FIJA)
-    if not conexion_imap:
-        return jsonify({"error": "No se pudo conectar a Gmail vía IMAP."}), 500
+        print(f"Solicitud API recibida para buscar correos con asunto: '{asunto_a_buscar_param}', Desde: {fecha_desde_param}, Hasta: {fecha_hasta_param}")
+        
+        # Verificar que las credenciales estén configuradas
+        if not EMAIL_USUARIO_FIJO or not CONTRASENA_APP_FIJA:
+            error_msg = "Las credenciales de Gmail no están configuradas correctamente. Verifica las variables de entorno EMAIL_USUARIO y CONTRASENA_APP."
+            print(f"ERROR: {error_msg}")
+            return jsonify({"error": error_msg}), 500
+        
+        conexion_imap = conectar_imap(EMAIL_USUARIO_FIJO, CONTRASENA_APP_FIJA)
+        if not conexion_imap:
+            error_msg = "No se pudo conectar a Gmail vía IMAP. Verifica las credenciales y configuración de la cuenta."
+            print(f"ERROR: {error_msg}")
+            return jsonify({"error": error_msg}), 500
 
-    uids_correos_encontrados = buscar_correos_imap(conexion_imap, asunto_a_buscar_param, fecha_desde_param, fecha_hasta_param)
-    
-    # Aunque no mostraremos correos individuales, los necesitamos para generar el resumen.
-    todos_los_datos_extraidos = [] 
-    textos_para_resumen_consolidado = []
+        uids_correos_encontrados = buscar_correos_imap(conexion_imap, asunto_a_buscar_param, fecha_desde_param, fecha_hasta_param)
+        
+        # Aunque no mostraremos correos individuales, los necesitamos para generar el resumen.
+        todos_los_datos_extraidos = [] 
+        textos_para_resumen_consolidado = []
 
-    if uids_correos_encontrados:
-        for i, email_uid in enumerate(uids_correos_encontrados):
-            mensaje_parseado = obtener_y_parsear_correo_imap(conexion_imap, email_uid)
-            if mensaje_parseado:
-                informacion = extraer_informacion_correo(mensaje_parseado, email_uid)
-                if informacion:
-                    todos_los_datos_extraidos.append(informacion)
-    
-    if todos_los_datos_extraidos:
-        try:
-            # Ordenar por fecha para que el resumen tenga sentido cronológico
-            todos_los_datos_extraidos.sort(key=lambda x: datetime.fromisoformat(x['fecha'].split('T')[0]) if x.get('fecha') else datetime.min, reverse=False)
-            
-            for info_correo_ordenado in todos_los_datos_extraidos:
-                 # Formato más estructurado para la IA
-                 texto_correo_info = (
-                    f"FECHA: {info_correo_ordenado.get('fecha', 'N/A')}\n"
-                    f"DE: {info_correo_ordenado.get('remitente', 'N/A')}\n"
-                    f"ASUNTO: {info_correo_ordenado.get('asunto', 'N/A')}\n"
-                    f"CUERPO:\n{info_correo_ordenado.get('cuerpo_texto_plano', '')}"
-                 )
-                 textos_para_resumen_consolidado.append(texto_correo_info)
-        except Exception as e:
-            print(f"Error al intentar ordenar u obtener textos de correos para el resumen: {e}. El resumen podría no estar en orden cronológico.")
-
-    resumen_final_consolidado = "No se generó resumen consolidado."
-    global GEMINI_API_KEY_CONFIGURADA
-    if GEMINI_API_KEY_CONFIGURADA and textos_para_resumen_consolidado:
-        print(f"Intentando generar resumen consolidado para {len(textos_para_resumen_consolidado)} correos (ordenados cronológicamente).")
-        resumen_final_consolidado = generar_resumen_consolidado_ia(textos_para_resumen_consolidado)
-    elif not GEMINI_API_KEY_CONFIGURADA:
-        resumen_final_consolidado = "Resumen consolidado no disponible (API Key de Gemini no configurada)."
-    elif not textos_para_resumen_consolidado:
-         resumen_final_consolidado = "No se encontraron correos para generar un resumen consolidado con los filtros aplicados."
-
-    if conexion_imap:
-        try:
-            conexion_imap.close()
-        except: pass
-        finally:
+        if uids_correos_encontrados:
+            for i, email_uid in enumerate(uids_correos_encontrados):
+                try:
+                    mensaje_parseado = obtener_y_parsear_correo_imap(conexion_imap, email_uid)
+                    if mensaje_parseado:
+                        informacion = extraer_informacion_correo(mensaje_parseado, email_uid)
+                        if informacion:
+                            todos_los_datos_extraidos.append(informacion)
+                except Exception as e:
+                    print(f"Error al procesar correo UID {email_uid}: {e}")
+                    continue
+        
+        if todos_los_datos_extraidos:
             try:
-                conexion_imap.logout()
-            except: pass
-    
-    respuesta_final = {
-        "resumen_consolidado": resumen_final_consolidado
-    }
-    if not uids_correos_encontrados and not (GEMINI_API_KEY_CONFIGURADA and textos_para_resumen_consolidado):
-         respuesta_final["mensaje_general"] = f"No se encontraron correos con el asunto: '{asunto_a_buscar_param}' y los filtros de fecha aplicados."
+                # Ordenar por fecha para que el resumen tenga sentido cronológico
+                todos_los_datos_extraidos.sort(key=lambda x: datetime.fromisoformat(x['fecha'].split('T')[0]) if x.get('fecha') else datetime.min, reverse=False)
+                
+                for info_correo_ordenado in todos_los_datos_extraidos:
+                     # Formato más estructurado para la IA
+                     texto_correo_info = (
+                        f"FECHA: {info_correo_ordenado.get('fecha', 'N/A')}\n"
+                        f"DE: {info_correo_ordenado.get('remitente', 'N/A')}\n"
+                        f"ASUNTO: {info_correo_ordenado.get('asunto', 'N/A')}\n"
+                        f"CUERPO:\n{info_correo_ordenado.get('cuerpo_texto_plano', '')}"
+                     )
+                     textos_para_resumen_consolidado.append(texto_correo_info)
+            except Exception as e:
+                print(f"Error al intentar ordenar u obtener textos de correos para el resumen: {e}. El resumen podría no estar en orden cronológico.")
 
-    return jsonify(respuesta_final)
+        resumen_final_consolidado = "No se generó resumen consolidado."
+        if GEMINI_API_KEY_CONFIGURADA and textos_para_resumen_consolidado:
+            print(f"Intentando generar resumen consolidado para {len(textos_para_resumen_consolidado)} correos (ordenados cronológicamente).")
+            try:
+                resumen_final_consolidado = generar_resumen_consolidado_ia(textos_para_resumen_consolidado)
+            except Exception as e:
+                print(f"Error al generar resumen con IA: {e}")
+                resumen_final_consolidado = f"Error al generar resumen: {str(e)}"
+        elif not GEMINI_API_KEY_CONFIGURADA:
+            resumen_final_consolidado = "Resumen consolidado no disponible (API Key de Gemini no configurada)."
+        elif not textos_para_resumen_consolidado:
+             resumen_final_consolidado = "No se encontraron correos para generar un resumen consolidado con los filtros aplicados."
+
+        # Cerrar conexión IMAP de forma segura
+        if conexion_imap:
+            try:
+                conexion_imap.close()
+                conexion_imap.logout()
+            except Exception as e:
+                print(f"Error al cerrar conexión IMAP: {e}")
+        
+        respuesta_final = {
+            "resumen_consolidado": resumen_final_consolidado,
+            "total_correos": len(todos_los_datos_extraidos)
+        }
+        
+        if not uids_correos_encontrados:
+             respuesta_final["mensaje_general"] = f"No se encontraron correos con el asunto: '{asunto_a_buscar_param}' y los filtros de fecha aplicados."
+
+        return jsonify(respuesta_final)
+        
+    except Exception as e:
+        print(f"Error general en buscar_correos: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
 
 @app.route('/api/analizar_datos', methods=['GET'])
 def analizar_datos():
@@ -641,101 +612,45 @@ def analizar_bbdd():
 
 @app.route('/api/asistente_consulta', methods=['POST'])
 def asistente_consulta():
-    """Endpoint para procesar consultas del asistente IA"""
     try:
-        # Obtener los datos de la consulta
         data = request.json
-        if not data or 'query' not in data:
-            return jsonify({"error": "La consulta es requerida"}), 400
+        user_query = data.get('query', '')
         
-        user_query = data.get('query')
-        context = data.get('context', [])
-        analysis_data = data.get('analysisData', {})
+        # Si la consulta es sobre búsqueda de archivos
+        if "archivos" in user_query.lower() or "drive" in user_query.lower():
+            # Código existente para búsqueda de archivos...
+            pass
+            
+        # Si es otro tipo de consulta, usa el modelo generativo
+        model = genai.GenerativeModel('gemini-1.5-flash')  # Cambio aquí también
+        response = model.generate_content(user_query)
         
-        # Verificar si tenemos datos de análisis
-        if not analysis_data:
-            return jsonify({"response": "Lo siento, no tengo datos de análisis disponibles para responder a tu pregunta."}), 200
+        return jsonify({
+            "response": response.text if hasattr(response, 'text') else "No se pudo generar una respuesta"
+        })
         
-        # Determinar el tipo de análisis y construir el prompt adecuado
-        analysis_type = analysis_data.get('tipo', '')
-        
-        if analysis_type == "informe_correo":
-            # Prompt para informe de correo
-            prompt = f"""
-            Eres un asistente analítico especializado en resúmenes de correos electrónicos. 
-            Te han proporcionado el siguiente informe generado a partir de un hilo de correos con asunto: "{analysis_data.get('asunto', 'No especificado')}".
-            
-            El contenido del informe es:
-            
-            ```
-            {analysis_data.get('contenido', 'Informe no disponible')}
-            ```
-            
-            HISTORIAL DE LA CONVERSACIÓN:
-            {context}
-            
-            CONSULTA DEL USUARIO: {user_query}
-            
-            Responde a la consulta del usuario basándote en el informe proporcionado.
-            - Sé específico y utiliza información concreta del informe
-            - Si te preguntan por algo que no está en el informe, indícalo claramente
-            - Utiliza Markdown para formatear la respuesta cuando sea útil
-            
-            Tu respuesta:
-            """
-        else:
-            # Prompt existente para análisis de datos (conservar el código original)
-            formatted_data = json.dumps(analysis_data, indent=2)
-            prompt = f"""
-            Eres un asistente analítico especializado en datos de fallas técnicas. Te han proporcionado los siguientes datos de análisis:
-            
-            ```json
-            {formatted_data}
-            ```
-            
-            Estos datos contienen información sobre:
-            - Las 5 familias con más fallas (conteo de TrackID)
-            - Los 5 TestCodes más frecuentes
-            - Los 5 procesos con más fallas
-            - Información detallada sobre los TestCodes por cada familia principal
-            
-            HISTORIAL DE LA CONVERSACIÓN:
-            {context}
-            
-            CONSULTA DEL USUARIO: {user_query}
-            
-            Responde a la consulta del usuario de forma clara y concisa, utilizando los datos proporcionados.
-            - Menciona números específicos y porcentajes cuando sea relevante
-            - Si te preguntan por datos que no están disponibles, indícalo claramente
-            - Usa un tono conversacional pero profesional
-            - Utiliza Markdown para formatear la respuesta cuando sea útil (negritas, listas, etc.)
-            - Si te preguntan por un análisis que no tienes los datos suficientes para hacer, sugiere qué información adicional sería útil
-            
-            Tu respuesta:
-            """
-            
-        # El resto del código permanece igual
-        # ...
-        
-        # Hacer la consulta a Gemini
-        try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content(prompt)
-            
-            assistant_response = response.text.strip() if hasattr(response, 'text') and response.text else "No pude generar una respuesta adecuada con los datos disponibles."
-            
-            return jsonify({"response": assistant_response}), 200
-            
-        except Exception as e:
-            print(f"Error al generar respuesta con Gemini: {e}")
-            return jsonify({"response": f"Lo siento, no pude procesar tu consulta debido a un error: {str(e)}"}), 200
-            
     except Exception as e:
+        print(f"Error en asistente_consulta: {str(e)}")
         return jsonify({"error": f"Error al procesar consulta: {str(e)}"}), 500
 
+@app.route('/api/test_connection', methods=['GET'])
+def test_connection():
+    try:
+        print(f"Probando conexión con: {EMAIL_USUARIO_FIJO}")
+        print(f"Contraseña (primeros 4 chars): {CONTRASENA_APP_FIJA[:4] if CONTRASENA_APP_FIJA else 'None'}...")
+        
+        if not EMAIL_USUARIO_FIJO or not CONTRASENA_APP_FIJA:
+            return jsonify({"status": "error", "message": "Credenciales no configuradas"}), 400
+        
+        conexion = conectar_imap(EMAIL_USUARIO_FIJO, CONTRASENA_APP_FIJA)
+        if conexion:
+            conexion.close()
+            conexion.logout()
+            return jsonify({"status": "success", "message": "Conexión IMAP exitosa"})
+        else:
+            return jsonify({"status": "error", "message": "Falló la conexión IMAP"}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 if __name__ == '__main__':
-    if not EMAIL_USUARIO_FIJO or not CONTRASENA_APP_FIJA or not GOOGLE_API_KEY_FIJA or GOOGLE_API_KEY_FIJA == "TU_GEMINI_API_KEY_AQUI":
-        print("ADVERTENCIA: Revisa la configuración de EMAIL_USUARIO_FIJO, CONTRASENA_APP_FIJA o GOOGLE_API_KEY_FIJA en el script.")
-    
-    print("Iniciando servidor Flask en http://127.0.0.1:5000")
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(debug=True, host='127.0.0.1', port=5000)

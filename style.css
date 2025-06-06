@@ -281,12 +281,18 @@ button[type="submit"]:hover {
     border-color: #c3e6cb;
 }
 
-/* Estilos para el asistente de chat */
-.assistant-message, .user-message {
-    display: flex;
-    margin-bottom: 15px;
+/* Estilos para el chat */
+#chat-container {
+    height: 400px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 5px;
+    padding: 10px;
+    margin-bottom: 1rem;
+    background-color: white;
 }
 
+/* Estilos para mensajes */
 .message-avatar {
     width: 40px;
     height: 40px;
@@ -308,33 +314,25 @@ button[type="submit"]:hover {
     color: white;
 }
 
-.message-content {
+/* Sugerencias de archivos */
+#suggestions {
+    margin-top: 10px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.file-suggestion {
+    padding: 8px 12px;
+    margin: 4px 0;
     background-color: #f8f9fa;
-    padding: 10px 15px;
-    border-radius: 10px;
-    flex-grow: 1;
-    max-width: calc(100% - 50px);
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s;
 }
 
-.assistant-message .message-content {
-    background-color: #e7f3ff;
-}
-
-.user-message .message-content {
-    background-color: #f1f3f5;
-}
-
-.message-content p {
-    margin-bottom: 0;
-}
-
-.user-message {
-    flex-direction: row-reverse;
-}
-
-.user-message .message-avatar {
-    margin-right: 0;
-    margin-left: 10px;
+.file-suggestion:hover {
+    background-color: #e9ecef;
 }
 
 /* Loader para indicador de escritura */
@@ -387,15 +385,4 @@ button[type="submit"]:hover {
     30% {
         transform: translateY(-5px);
     }
-}
-
-/* Estilo para el contenedor del chat */
-#chat-container {
-    height: 400px;
-    overflow-y: auto;
-    border: 1px solid #dee2e6;
-    border-radius: 5px;
-    padding: 10px;
-    margin-bottom: 1rem;
-    background-color: white;
 }

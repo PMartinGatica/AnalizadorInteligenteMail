@@ -3,6 +3,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import os
 import pickle
+from datetime import datetime
 
 # Alcances necesarios para Google Drive y Google Sheets
 SCOPES = [
@@ -57,6 +58,42 @@ def leer_hoja_de_calculo(sheets_service, sheet_id, rango):
     else:
         for fila in valores:
             print(fila)
+
+def buscar_archivos_drive(drive_service, query, max_results=10):
+    """
+    Busca archivos en Google Drive según los criterios especificados.
+    
+    Args:
+        drive_service: Servicio de Google Drive autenticado
+        query: String con la consulta de búsqueda
+        max_results: Número máximo de resultados a devolver (default: 10)
+    
+    Returns:
+        Lista de diccionarios con información de los archivos encontrados
+    """
+    try:
+        results = drive_service.files().list(
+            q=query,
+            pageSize=max_results,
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, webViewLink)"
+        ).execute()
+        
+        files = results.get('files', [])
+        
+        # Formatear la fecha de modificación para cada archivo
+        for file in files:
+            if 'modifiedTime' in file:
+                # Convertir la fecha a un formato más legible
+                modified_time = datetime.strptime(
+                    file['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'
+                )
+                file['modifiedTime'] = modified_time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        return files
+        
+    except Exception as e:
+        print(f"Error al buscar archivos en Drive: {e}")
+        return []
 
 if __name__ == '__main__':
     creds = autenticar()
